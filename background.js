@@ -16,9 +16,9 @@
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG = {
-  CRM_FETCH_URL: "https://crm.creditfreedomrestoration.com/import_api.php?mode=get_experian_dispute_data",
-  CRM_SUCCESS_URL: "https://crm.creditfreedomrestoration.com/import_api.php?mode=experian_dispute_error_api_success",
-  CRM_ERROR_URL: "https://crm.creditfreedomrestoration.com/import_api.php?mode=experian_dispute_error_api_error",
+   CRM_FETCH_URL: "https://crm.creditfreedomrestoration.com/autodataimport.php?mode=get_experian_dispute_data",
+  CRM_SUCCESS_URL: "https://crm.creditfreedomrestoration.com/autodataimport.php?mode=experian_dispute_error_api_success",
+  CRM_ERROR_URL: "https://crm.creditfreedomrestoration.com/autodataimport.php?mode=experian_dispute_error_api_error",
   PDF_BASE_URL: "http://207.244.236.188/PdfFiles/",
   EXPERIAN_URL: "https://www.experian.com/consumer/upload/",
   COMPRESS_THRESHOLD_MB: 5,
