@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Experian Dispute Automation</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 13px;
+      background: #0f172a;
+      color: #e2e8f0;
+      width: 360px;
+      min-height: 180px;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: linear-gradient(135deg, #1e3a5f 0%, #1a2744 100%);
+      padding: 14px 16px 12px;
+      border-bottom: 1px solid #2d3f5c;
+    }
+    .header h1 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #93c5fd;
+      letter-spacing: 0.02em;
+    }
+    .header p {
+      font-size: 11px;
+      color: #64748b;
+      margin-top: 2px;
+    }
+
+    /* ── Body ── */
+    .body { padding: 14px 16px; }
+
+    /* ── Run button ── */
+    #runBtn {
+      width: 100%;
+      padding: 10px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      letter-spacing: 0.01em;
+    }
+    #runBtn:hover:not(:disabled) { background: #1d4ed8; }
+    #runBtn:active:not(:disabled) { transform: scale(0.98); }
+    #runBtn:disabled {
+      background: #1e3a5f;
+      color: #475569;
+      cursor: not-allowed;
+    }
+
+    /* ── Status card ── */
+    #statusCard {
+      display: none;
+      margin-top: 12px;
+      background: #1e293b;
+      border: 1px solid #2d3f5c;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    #statusCard.visible { display: block; }
+
+    .status-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      background: #1a2744;
+      border-bottom: 1px solid #2d3f5c;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot.spinning {
+      background: #3b82f6;
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    .dot.success { background: #22c55e; }
+    .dot.error   { background: #ef4444; }
+    .dot.idle    { background: #64748b; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+
+    #statusLabel {
+      font-size: 12px;
+      font-weight: 600;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    #statusDetail {
+      font-size: 12px;
+      color: #94a3b8;
+      padding: 9px 12px;
+      line-height: 1.5;
+      word-break: break-word;
+      max-height: 80px;
+      overflow-y: auto;
+    }
+
+    /* ── Links row ── */
+    .links {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #1e293b;
+    }
+    .links a {
+      font-size: 11px;
+      color: #3b82f6;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .links a:hover { text-decoration: underline; }
+
+    /* ── Summary pills ── */
+    #summaryRow {
+      display: none;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+    #summaryRow.visible { display: flex; }
+    .pill {
+      padding: 3px 10px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .pill.success { background: #052e16; color: #4ade80; border: 1px solid #166534; }
+    .pill.error   { background: #2d0a0a; color: #f87171; border: 1px solid #7f1d1d; }
+    .pill.skip    { background: #1c1917; color: #a8a29e; border: 1px solid #44403c; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1>⚡ Experian Dispute Automation</h1>
+    <p>Fetches CRM record → fills Experian form automatically</p>
+  </div>
+
+  <div class="body">
+
+    <button id="runBtn">▶ Run Next Dispute</button>
+
+    <!-- Today's summary pills -->
+    <div id="summaryRow"></div>
+
+    <!-- Live status card -->
+    <div id="statusCard">
+      <div class="status-header">
+        <div class="dot idle" id="statusDot"></div>
+        <span id="statusLabel">Idle</span>
+      </div>
+      <div id="statusDetail"></div>
+    </div>
+
+    <!-- Bottom links -->
+    <div class="links">
+      <a id="logsLink">📋 View Logs</a>
+      <a id="optionsLink">⚙️ Settings</a>
+    </div>
+
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

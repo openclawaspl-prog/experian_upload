@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Experian Dispute — Settings</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 13px;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 32px;
+    }
+    h1 { font-size: 18px; color: #93c5fd; margin-bottom: 8px; }
+    .subtitle { font-size: 12px; color: #475569; margin-bottom: 28px; }
+
+    .section { margin-bottom: 28px; }
+    .section h2 {
+      font-size: 12px;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+      margin-bottom: 14px;
+      border-bottom: 1px solid #1e293b;
+      padding-bottom: 6px;
+    }
+
+    .field { margin-bottom: 14px; }
+    label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 5px; font-weight: 600; }
+    .hint { font-size: 11px; color: #475569; margin-top: 4px; }
+
+    input[type="text"], input[type="number"] {
+      width: 100%;
+      max-width: 520px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 7px;
+      color: #e2e8f0;
+      font-size: 13px;
+      padding: 8px 12px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="text"]:focus, input[type="number"]:focus { border-color: #3b82f6; }
+
+    .btn-row { display: flex; gap: 12px; align-items: center; margin-top: 28px; }
+    button {
+      padding: 9px 22px;
+      border-radius: 7px;
+      border: none;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #saveBtn { background: #2563eb; color: #fff; }
+    #saveBtn:hover { background: #1d4ed8; }
+    #resetBtn { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+    #resetBtn:hover { background: #2d3f5c; }
+
+    #saveMsg {
+      font-size: 12px;
+      color: #4ade80;
+      display: none;
+    }
+    #saveMsg.visible { display: inline; }
+  </style>
+</head>
+<body>
+
+  <h1>⚙️ Settings</h1>
+  <p class="subtitle">Configure server URLs for the Experian Dispute Automation Extension.</p>
+
+  <div class="section">
+    <h2>PDF Server</h2>
+
+    <div class="field">
+      <label for="pdfBaseUrl">PDF Base URL</label>
+      <input type="text" id="pdfBaseUrl"
+        placeholder="https://crm.creditfreedomrestoration.com/PdfFiles/" />
+      <p class="hint">
+        Base URL where IIS serves files from <code>C:\inetpub\wwwroot\PdfFiles</code>.<br />
+        Filename is appended automatically. Must end with <code>/</code>.
+      </p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>CRM API Endpoints</h2>
+
+    <div class="field">
+      <label for="crmFetchUrl">Fetch Dispute URL</label>
+      <input type="text" id="crmFetchUrl"
+        placeholder="https://crm.creditfreedomrestoration.com/import_api.php?mode=get_experian_dispute_data" />
+    </div>
+
+    <div class="field">
+      <label for="crmSuccessUrl">Post Success URL</label>
+      <input type="text" id="crmSuccessUrl"
+        placeholder="https://crm.creditfreedomrestoration.com/import_api.php?mode=experian_dispute_error_api_success" />
+    </div>
+
+    <div class="field">
+      <label for="crmErrorUrl">Post Error URL</label>
+      <input type="text" id="crmErrorUrl"
+        placeholder="https://crm.creditfreedomrestoration.com/import_api.php?mode=experian_dispute_error_api_error" />
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Thresholds</h2>
+
+    <div class="field">
+      <label for="compressThreshold">PDF Size Warning Threshold (MB)</label>
+      <input type="number" id="compressThreshold" min="1" max="50" value="5" style="max-width:120px" />
+      <p class="hint">
+        Files over this size are uploaded as-is with a warning in the log.<br />
+        (Ghostscript compression is not available in browser extensions.)
+      </p>
+    </div>
+  </div>
+
+  <div class="btn-row">
+    <button id="saveBtn">Save Settings</button>
+    <button id="resetBtn">Reset to Defaults</button>
+    <span id="saveMsg">✓ Saved!</span>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

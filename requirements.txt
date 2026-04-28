@@ -1,0 +1,5 @@
+Flask==2.2.2
+pyngrok==5.2.1
+PyAutoGUI==0.9.53
+requests==2.28.1
+python-dotenv==0.21.0

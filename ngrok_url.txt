@@ -1,0 +1,3 @@
+Public URL: https://sherell-ferny-unethereally.ngrok-free.dev
+Trigger:    https://sherell-ferny-unethereally.ngrok-free.dev/run?key=mysecret1256
+Status:     https://sherell-ferny-unethereally.ngrok-free.dev/status
