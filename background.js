@@ -16,10 +16,9 @@
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG = {
-   CRM_FETCH_URL: "https://crm.creditfreedomrestoration.com/autodataimport.php?mode=get_experian_dispute_data",
+  CRM_FETCH_URL: "https://crm.creditfreedomrestoration.com/autodataimport.php?mode=get_experian_dispute_data",
   CRM_SUCCESS_URL: "https://crm.creditfreedomrestoration.com/autodataimport.php?mode=experian_dispute_error_api_success",
-  CRM_ERROR_URL: "https://crm.creditfreedomrestoration.com/autodataimport.php?mode=experian_dispute_error_api_error",
-  PDF_BASE_URL: "http://207.244.236.188/PdfFiles/",
+  CRM_ERROR_URL: "https://crm.creditfreedomrestoration.com/autodataimport.php?mode=experian_dispute_error_api_error",PDF_BASE_URL: "http://207.244.236.188/PdfFiles/",
   EXPERIAN_URL: "https://www.experian.com/consumer/upload/",
   COMPRESS_THRESHOLD_MB: 5,
 };
@@ -372,10 +371,14 @@ async function runDisputePipeline() {
     // ── 6. Open Experian tab ──────────────────────────────────────────────────
     await broadcastStatus(jobId, "opening_experian", "Opening Experian upload page…");
     const tab = await chrome.tabs.create({ url: config.EXPERIAN_URL, active: true });
-    await setJobState({ tabId: tab.id, jobId, status: "form_in_progress" });
+    await setJobState({ tabId: tab.id, jobId, disputeErrorId, status: "form_in_progress" });
     await writeLog(jobId, "TAB_OPENED",
       `Experian tab opened | tab_id=${tab.id} | url=${config.EXPERIAN_URL}`
     );
+    
+    // Set overarching timeout watchdog (110 seconds)
+    // If the content script hits a 404/network error, it might never reply.
+    chrome.alarms.create(`jobTimeout_${jobId}`, { delayInMinutes: 1.8 });
 
   } catch (err) {
     await writeLog(jobId, "JOB_FAILED", `FATAL: ${err.message}`, true);
@@ -389,6 +392,8 @@ async function runDisputePipeline() {
 
 async function handleFormResult({ jobId, isSuccess, resultMessage, disputeErrorId }) {
   const config = await getConfig();
+
+  chrome.alarms.clear(`jobTimeout_${jobId}`);
 
   await writeLog(jobId, isSuccess ? "FORM_SUCCESS" : "FORM_ERROR",
     `Result: ${resultMessage.substring(0, 500)}`
@@ -477,5 +482,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.storage.local.get(`log_${message.date}`)
         .then(r => sendResponse({ logs: r[`log_${message.date}`] || [] }));
       return true;
+  }
+});
+
+// ── Alarm Listener (Timeout Watchdog) ─────────────────────────────────────────
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name.startsWith("jobTimeout_")) {
+    const jobId = alarm.name.split("_")[1];
+    const state = await getJobState();
+    if (state.jobId === jobId && state.status === "form_in_progress") {
+      await writeLog(jobId, "JOB_TIMEOUT", "Automation timed out (possible blank page, 404, or network error)");
+      await handleFormResult({
+        jobId,
+        isSuccess: false,
+        resultMessage: "ERROR: Timeout — The job took too long (possible network error, 404, or browser hang).",
+        disputeErrorId: state.disputeErrorId || ""
+      });
+    }
   }
 });

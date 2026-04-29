@@ -32,12 +32,12 @@ SLEEP_BETWEEN_BROWSERS = 3 * 60  # 5 minutes in seconds
 
 # Browser definitions: (display_name, title_keyword, exe_path)
 BROWSERS = [
-    # ("Ulaa",         "Ulaa",               r"C:\Program Files\Zoho\Ulaa\Application\ulaa.exe"),
-    # ("Chrome",       "Google Chrome",      r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-    # ("Edge",         "Microsoft Edge",     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+    ("Ulaa",         "Ulaa",               r"C:\Program Files\Zoho\Ulaa\Application\ulaa.exe"),
+     ("Chrome",       "Google Chrome",      r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+    ("AVG Secure",   "AVG Secure Browser", r"C:\Program Files\AVG\Browser\Application\avg_browser.exe"),
+    ("Edge",         "Microsoft Edge",     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
     ("Brave",        "Brave",              r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
-    # ("AVG Secure",   "AVG Secure Browser", r"C:\Program Files\AVG\Browser\Application\avg_browser.exe"),
-    # ("JioSphere",    "JioSphere",          r"C:\Program Files\JioSphere\Application\jiosphere.exe"),
+    ("JioSphere",    "JioSphere",          r"C:\Program Files\JioSphere\Application\jiosphere.exe"),
     # If JioSphere is installed per-user, try this path instead:
     # ("JioSphere",  "JioSphere",          r"C:\Users\<YourUser>\AppData\Local\JioSphere\Application\jiosphere.exe"),
 ]
@@ -315,7 +315,7 @@ def run_script_for_browser(browser_name, title_keyword, exe_path=None):
     pyautogui.moveTo(1250, 280)
     pyautogui.click()
     time.sleep(1.5)
-    log("sleeping for 300 sec or 5 mins")
+    log("sleeping for 160 sec or 2.40 mins")
     time.sleep(160)
 
     pyautogui.hotkey('alt', 'f4')

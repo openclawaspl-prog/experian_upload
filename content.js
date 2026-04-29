@@ -654,7 +654,15 @@
     // Confirm URL never came — fall back to body text analysis
     clog("PAGE3_URL_TIMEOUT", "Confirm URL did not appear within timeout — reading body text");
 
-    const finalText = document.body.innerText || document.body.textContent || "";
+    const finalText = (document.body ? (document.body.innerText || document.body.textContent) : "").trim();
+    
+    // Check for blank white page
+    if (finalText.length < 10) {
+      clog("PAGE3_ERROR_BLANK", "Page is completely blank (white page) after timeout");
+      sendResult(false, "ERROR: Timeout — The page loaded as a blank white page without any content.");
+      return;
+    }
+
     const formMsg2 = document.querySelector("#FormMsg2");
     const isError = hasErrorText(finalText) || !!formMsg2;
 
