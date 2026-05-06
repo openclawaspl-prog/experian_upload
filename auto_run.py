@@ -11,6 +11,9 @@ import ctypes
 from ctypes import wintypes
 import subprocess
 import psutil
+import json
+import websocket
+import requests as _http
 
 # Path to extension icon image for visual matching
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "ext_icon.png")
@@ -27,24 +30,46 @@ run_log = []  # Track execution history
 # CONFIG
 # ============================================
 SECRET_KEY = "mysecret123"
-PORT = 5231
-SLEEP_BETWEEN_BROWSERS = 3 * 60  # 5 minutes in seconds
+PORT = 5232
+SLEEP_BETWEEN_BROWSERS = 3 * 60  # 3 minutes in seconds
 
-# Browser definitions: (display_name, title_keyword, exe_path)
+# Browser definitions: (display_name, title_keyword, exe_path, cdp_port)
+#
+# cdp_port — Chrome DevTools Protocol port for this browser instance.
+# This allows Python to call runDisputePipeline() directly in the extension's
+# service worker without needing to click anything on screen.
+#
+# HOW TO ENABLE CDP (one-time setup per browser):
+#   Right-click the browser shortcut → Properties → Target → append:
+#   --remote-debugging-port=<cdp_port>   e.g. chrome.exe --remote-debugging-port=9223
+#
+# If a browser is launched by this script (not pre-running), the port is
+# added automatically. If it was already running WITHOUT the flag, CDP will
+# fail gracefully and fall through to Tab+Enter keyboard trigger.
 BROWSERS = [
-    ("Ulaa",         "Ulaa",               r"C:\Program Files\Zoho\Ulaa\Application\ulaa.exe"),
-     ("Chrome",       "Google Chrome",      r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-    ("AVG Secure",   "AVG Secure Browser", r"C:\Program Files\AVG\Browser\Application\avg_browser.exe"),
-    ("Edge",         "Microsoft Edge",     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
-    ("Brave",        "Brave",              r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
-    ("JioSphere",    "JioSphere",          r"C:\Program Files\JioSphere\Application\jiosphere.exe"),
-    # If JioSphere is installed per-user, try this path instead:
-    # ("JioSphere",  "JioSphere",          r"C:\Users\<YourUser>\AppData\Local\JioSphere\Application\jiosphere.exe"),
+    # ("Ulaa",       "Ulaa",               r"C:\Program Files\Zoho\Ulaa\Application\ulaa.exe",                       9222),
+    ("Chrome",     "Google Chrome",      r"C:\Program Files\Google\Chrome\Application\chrome.exe",                  9223),
+    ("AVG Secure", "AVG Secure Browser", r"C:\Program Files\AVG\Browser\Application\avg_browser.exe",               9224),
+    ("Edge",       "Microsoft Edge",     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",           9225),
+    ("Brave",      "Brave",              r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",     9226),
+    ("JioSphere",  "JioSphere",          r"C:\Program Files\JioSphere\Application\jiosphere.exe",                   9227),
+    # Per-user JioSphere fallback:
+    # ("JioSphere", "JioSphere", r"C:\Users\<YourUser>\AppData\Local\JioSphere\Application\jiosphere.exe", 9227),
 ]
+
+# Surfshark VPN window handling.
+# Set the click coordinates to the button you want to press after Surfshark is restored.
+SURFSHARK_WINDOW_TITLE = "Surfshark"
+SURFSHARK_EXE_PATH = r"C:\Program Files\Surfshark\Surfshark.exe"
+SURFSHARK_CLICK_X = 1400
+SURFSHARK_CLICK_Y = 800
+SURFSHARK_RESTORE_DELAY = 1.0
+SURFSHARK_POST_CLICK_DELAY = 15.0
+SURFSHARK_AFTER_CLOSE_DELAY = 5.0
 
 # Disable PyAutoGUI fail-safe (prevents crash if mouse is at corner on RDP/VMs)
 pyautogui.FAILSAFE = False
-# ============================================
+
 
 
 def log(msg):
@@ -57,6 +82,16 @@ def log(msg):
     # Keep only last 50 log entries
     if len(run_log) > 50:
         run_log.pop(0)
+
+
+def sleep_with_stop(seconds, label):
+    """Sleep in 1-second chunks so stop requests can interrupt long waits."""
+    for _ in range(int(seconds)):
+        if stop_requested:
+            log(f"Stop requested during {label} - exiting")
+            return False
+        time.sleep(1)
+    return True
 
 
 # ============================================
@@ -86,7 +121,7 @@ def find_and_activate_browser(title_keyword, exe_path=None):
                         proc_exe = proc.exe().lower()
                         if proc_exe.endswith(exe_name):
                             length = user32.GetWindowTextLengthW(hwnd)
-                            if length > 0:  # Only windows with visible titles
+                            if length > 0:
                                 hwnd_target.append(hwnd)
                     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                         pass
@@ -97,8 +132,8 @@ def find_and_activate_browser(title_keyword, exe_path=None):
 
             if hwnd_target:
                 hwnd = hwnd_target[0]
-                user32.ShowWindow(hwnd, 9)  # SW_RESTORE first (in case minimized)
-                user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE — full window ✅
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
                 user32.SetForegroundWindow(hwnd)
                 log(f"Browser activation OK: '{title_keyword}' (via exe match → {exe_name})")
                 return True
@@ -123,8 +158,8 @@ def find_and_activate_browser(title_keyword, exe_path=None):
 
         if hwnd_target:
             hwnd = hwnd_target[0]
-            user32.ShowWindow(hwnd, 9)  # SW_RESTORE first (in case minimized)
-            user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE — full window ✅
+            user32.ShowWindow(hwnd, 9)
+            user32.ShowWindow(hwnd, 3)
             user32.SetForegroundWindow(hwnd)
             log(f"Browser activation OK: '{title_keyword}' (via title match)")
             return True
@@ -135,6 +170,118 @@ def find_and_activate_browser(title_keyword, exe_path=None):
     except Exception as e:
         log(f"Browser activation error for '{title_keyword}': {e}")
         return False
+
+
+def find_and_restore_window(title_keyword, exe_path=None):
+    """
+    Bring a non-browser window to the foreground and restore it if minimized.
+    Returns the restored window handle, or None if no match was found.
+    """
+    try:
+        user32 = ctypes.windll.user32
+
+        # Primary: match by executable path
+        if exe_path:
+            exe_name = os.path.basename(exe_path).lower()
+            hwnd_target = []
+
+            def enum_cb_exe(hwnd, lParam):
+                if user32.IsWindowVisible(hwnd):
+                    pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    try:
+                        proc = psutil.Process(pid.value)
+                        proc_exe = proc.exe().lower()
+                        if proc_exe.endswith(exe_name):
+                            length = user32.GetWindowTextLengthW(hwnd)
+                            if length > 0:
+                                hwnd_target.append(hwnd)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        pass
+                return True
+
+            WNDENUMPROC_EXE = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            user32.EnumWindows(WNDENUMPROC_EXE(enum_cb_exe), 0)
+
+            if hwnd_target:
+                hwnd = hwnd_target[0]
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                user32.SetForegroundWindow(hwnd)
+                log(f"Window restore OK: '{title_keyword}' (via exe match -> {exe_name})")
+                return hwnd
+            else:
+                log(f"Exe match failed for '{exe_name}' - falling back to title match")
+
+        # Fallback: match by window title keyword
+        hwnd_target = []
+
+        def enum_cb_title(hwnd, lParam):
+            if user32.IsWindowVisible(hwnd):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buf, length + 1)
+                    if title_keyword.lower() in buf.value.lower():
+                        hwnd_target.append(hwnd)
+            return True
+
+        WNDENUMPROC_TITLE = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(WNDENUMPROC_TITLE(enum_cb_title), 0)
+
+        if hwnd_target:
+            hwnd = hwnd_target[0]
+            user32.ShowWindow(hwnd, 9)
+            user32.SetForegroundWindow(hwnd)
+            log(f"Window restore OK: '{title_keyword}' (via title match)")
+            return hwnd
+        else:
+            log(f"Window NOT found: '{title_keyword}'")
+            return None
+
+    except Exception as e:
+        log(f"Window restore error for '{title_keyword}': {e}")
+        return None
+
+
+def restore_surfshark_and_click(click_x, click_y, title_keyword=SURFSHARK_WINDOW_TITLE, exe_path=SURFSHARK_EXE_PATH):
+    """
+    Restore Surfshark from a minimized state, move the mouse, and click.
+    """
+    hwnd = find_and_restore_window(title_keyword, exe_path)
+    if not hwnd:
+        return False
+
+    time.sleep(SURFSHARK_RESTORE_DELAY)
+
+    if click_x is None or click_y is None:
+        user32 = ctypes.windll.user32
+        client_rect = wintypes.RECT()
+        client_center = wintypes.POINT()
+
+        if user32.GetClientRect(hwnd, ctypes.byref(client_rect)):
+            client_center.x = (client_rect.right - client_rect.left) // 2
+            client_center.y = (client_rect.bottom - client_rect.top) // 2
+            if user32.ClientToScreen(hwnd, ctypes.byref(client_center)):
+                click_x = client_center.x
+                click_y = client_center.y
+                log(f"Surfshark click coordinates not configured; using client center ({click_x}, {click_y}).")
+
+        if click_x is None or click_y is None:
+            window_rect = wintypes.RECT()
+            if user32.GetWindowRect(hwnd, ctypes.byref(window_rect)):
+                click_x = (window_rect.left + window_rect.right) // 2
+                click_y = (window_rect.top + window_rect.bottom) // 2
+                log(f"Surfshark client center unavailable; using window center ({click_x}, {click_y}).")
+
+    if click_x is None or click_y is None:
+        log("Surfshark restored, but click coordinates are not configured and could not be derived.")
+        return False
+    
+    pyautogui.moveTo(click_x, click_y, duration=0.25)
+    pyautogui.click()
+    log(f"Surfshark click sent at ({click_x}, {click_y})")
+    time.sleep(SURFSHARK_POST_CLICK_DELAY)
+    return True
 
 
 def get_all_window_titles():
@@ -191,11 +338,103 @@ def get_foreground_window_exe():
         return ""
 
 
-def is_target_tab_open(title_keyword):
-    """Check if the active browser tab is an Experian page."""
-    title = get_foreground_window_title().lower()
-    log(f"Foreground window title: {title}")
-    return "experian" in title
+# ============================================
+# CDP — CHROME DEVTOOLS PROTOCOL TRIGGER
+# ============================================
+# Calls runDisputePipeline() directly inside the extension's service worker
+# via a WebSocket connection to Chrome's remote debugging port.
+# This completely eliminates coordinate-based clicking — works on any screen size.
+#
+# Requires the browser to be running with --remote-debugging-port=<cdp_port>.
+# Browsers launched by this script get the flag automatically via launch_browser_if_needed().
+# Browsers that were already running without the flag: CDP fails → falls back to Tab+Enter.
+# ============================================
+
+def find_extension_service_worker(cdp_port):
+    """
+    Query CDP for the extension's background service worker.
+    Returns the webSocketDebuggerUrl, or None if not found.
+    """
+    try:
+        res = _http.get(f"http://localhost:{cdp_port}/json/list", timeout=5)
+        targets = res.json()
+        log(f"CDP port {cdp_port}: found {len(targets)} targets")
+        for t in targets:
+            url = t.get("url", "")
+            if t.get("type") == "service_worker" and "chrome-extension://" in url:
+                log(f"CDP: Extension service worker found → {url[:80]}")
+                return t.get("webSocketDebuggerUrl")
+        log(f"CDP port {cdp_port}: no extension service worker in target list")
+    except Exception as e:
+        log(f"CDP port {cdp_port}: target query failed — {e}")
+    return None
+
+
+def trigger_extension_cdp(cdp_port):
+    """
+    Directly invoke runDisputePipeline() in the extension's service worker via CDP.
+    Returns True on success, False on any failure.
+    """
+    if not cdp_port:
+        return False
+
+    ws_url = find_extension_service_worker(cdp_port)
+    if not ws_url:
+        return False
+
+    try:
+        ws = websocket.create_connection(ws_url, timeout=10)
+        ws.send(json.dumps({
+            "id": 1,
+            "method": "Runtime.evaluate",
+            "params": {
+                "expression": "runDisputePipeline()",
+                "awaitPromise": False,
+            }
+        }))
+        raw = ws.recv()
+        ws.close()
+
+        result = json.loads(raw)
+        if result.get("error"):
+            log(f"CDP: Runtime error — {result['error']}")
+            return False
+
+        log(f"CDP: Extension triggered successfully via port {cdp_port}")
+        return True
+
+    except Exception as e:
+        log(f"CDP: WebSocket error on port {cdp_port} — {e}")
+        return False
+
+
+# ============================================
+# POPUP KEYBOARD TRIGGER
+# ============================================
+# After Ctrl+Shift+Q opens the extension popup, the popup window has focus.
+# The "▶ Run Next Dispute" button (id=runBtn) is the FIRST focusable element
+# in the popup HTML, so Tab always lands on it.
+# This requires no coordinates and works on any screen resolution.
+# ============================================
+
+def trigger_extension_keyboard():
+    """
+    Open the extension popup via keyboard shortcut, then Tab+Enter to click Run.
+    No screen coordinates needed — works on any resolution/screen size.
+    """
+    time.sleep(2.5)
+
+    log("Keyboard trigger: opening popup (Ctrl+Shift+Q)...")
+    pyautogui.hotkey('ctrl', 'shift', 'e')
+    time.sleep(2.5)
+
+    # Tab focuses runBtn (first focusable element in popup.html)
+    # Enter clicks it — same as pressing the button
+   
+    pyautogui.press('tab')
+    time.sleep(1.5)
+    pyautogui.press('enter')
+    log("Keyboard trigger: done")
 
 
 # ============================================
@@ -206,13 +445,6 @@ def wait_for_browser_foreground(browser_name, title_keyword, exe_path=None, retr
     """
     After calling find_and_activate_browser(), wait until the browser
     is actually the foreground window before proceeding.
-
-    Matches foreground window by:
-      1. exe_path (if provided) — immune to misleading window titles
-      2. title_keyword fallback if exe check fails
-
-    Retries up to `retries` times, re-activating each attempt.
-    Returns True if browser came to foreground, False if it never did.
     """
     exe_name = os.path.basename(exe_path).lower() if exe_path else None
 
@@ -224,30 +456,25 @@ def wait_for_browser_foreground(browser_name, title_keyword, exe_path=None, retr
         log(f"Waiting for {browser_name} foreground... attempt {attempt}/{retries} | "
             f"title='{fg_title}' | exe='{fg_exe}'")
 
-        # Primary check: exe match
         if exe_name and fg_exe.lower().endswith(exe_name):
             log(f"{browser_name} is now foreground (exe match) — proceeding")
             return True
 
-        # Fallback check: title keyword
         if title_keyword.lower() in fg_title.lower():
             log(f"{browser_name} is now foreground (title match) — proceeding")
             return True
 
-        # Re-trigger activation in case Windows didn't honour it
         find_and_activate_browser(title_keyword, exe_path)
 
     log(f"ERROR: {browser_name} never came to foreground after {retries} attempts — skipping")
     return False
 
 
-def launch_browser_if_needed(browser_name, title_keyword, exe_path):
+def launch_browser_if_needed(browser_name, title_keyword, exe_path, cdp_port=None):
     """
-    Try to activate the browser. If not found, launch it from exe_path,
-    wait for it to load, then try activating again.
-    Returns True if browser is successfully activated, False otherwise.
+    Try to activate the browser. If not found, launch it.
+    When launching, adds --remote-debugging-port so CDP works from the start.
     """
-    # First try: maybe it's already open
     found = find_and_activate_browser(title_keyword, exe_path)
 
     if not found:
@@ -259,18 +486,21 @@ def launch_browser_if_needed(browser_name, title_keyword, exe_path):
 
         if not os.path.exists(exe_path):
             log(f"ERROR: Executable not found at path: {exe_path}")
-            log(f"  Hint: Check BROWSERS config or run 'Get-Process | Select-Object Path' in PowerShell")
             return False
 
         try:
-            subprocess.Popen([exe_path])
-            log(f"Launched {browser_name}, waiting 5s for it to load...")
+            cmd = [exe_path]
+            if cdp_port:
+                cmd.append(f"--remote-debugging-port={cdp_port}")
+                log(f"Launching {browser_name} with CDP port {cdp_port}...")
+            else:
+                log(f"Launching {browser_name}...")
+            subprocess.Popen(cmd)
             time.sleep(5)
         except Exception as e:
             log(f"ERROR: Failed to launch {browser_name}: {e}")
             return False
 
-        # Second try after launch — find_and_activate_browser now maximizes automatically
         found = find_and_activate_browser(title_keyword, exe_path)
         if not found:
             log(f"ERROR: {browser_name} still not found after launch — skipping")
@@ -279,47 +509,70 @@ def launch_browser_if_needed(browser_name, title_keyword, exe_path):
     return True
 
 
-def run_script_for_browser(browser_name, title_keyword, exe_path=None):
+def run_script_for_browser(browser_name, title_keyword, exe_path=None, cdp_port=None):
     """Run the automation script for a single browser."""
     log(f"--- Starting script for: {browser_name} ---")
 
-    # Step 0: Bring browser to foreground (launch if needed)
-    log(f"Step 0: Activating {browser_name}...")
-    if not launch_browser_if_needed(browser_name, title_keyword, exe_path):
+    # Step 0: Restore Surfshark before opening the browser.
+    log("Surfshark setup: restoring the VPN window before opening the browser...")
+    restore_surfshark_and_click(SURFSHARK_CLICK_X, SURFSHARK_CLICK_Y)
+
+    # Step 0: Activate browser (launch if needed)
+    if not launch_browser_if_needed(browser_name, title_keyword, exe_path, cdp_port):
         log(f"Skipping {browser_name} — could not activate or launch")
         return
 
-    # Wait until browser is actually the foreground window before sending any keystrokes
     if not wait_for_browser_foreground(browser_name, title_keyword, exe_path):
         return
 
-    time.sleep(0.5)  # small extra buffer after confirmed foreground
+    time.sleep(0.5)
 
-    # Step 1: Open incognito/private window + new tab
-    time.sleep(1.5)
+    # Step 1: Open incognito window + new tab
     pyautogui.hotkey('ctrl', 'shift', 'n')
     time.sleep(1.5)
     pyautogui.hotkey('ctrl', 't')
     time.sleep(1.5)
 
-    # Step 2: Open Extension via Keyboard Shortcut
-    # log("Step 2: Opening extension (Ctrl+Shift+E)...")
-    pyautogui.hotkey('ctrl', 'shift', 'q')
-    time.sleep(1.5)
+    # ── Trigger strategy (most reliable → least reliable) ────────────────────
+    #
+    # 1. CDP  — calls runDisputePipeline() directly in the service worker.
+    #           Zero UI dependency. Works on any screen size.
+    #           Requires browser launched with --remote-debugging-port=<cdp_port>.
+    #
+    # 2. Tab+Enter — opens the popup via Ctrl+Shift+Q, then uses keyboard
+    #           navigation to click runBtn (first focusable element in popup.html).
+    #           No coordinates. Works on any screen size.
+    #
+    # 3. Coordinate click — last resort. Screen-size dependent; kept as safety net.
+    # ─────────────────────────────────────────────────────────────────────────
 
-    pyautogui.hotkey('win', 'up')
-    time.sleep(2)
+    triggered = False
 
-    # Step 3: Click the bottom button (fixed position)
-    log("Step 3: Click (1250, 310)")
-    pyautogui.moveTo(1250, 280)
-    pyautogui.click()
-    time.sleep(1.5)
-    log("sleeping for 160 sec or 2.40 mins")
+    # Try CDP first
+    if cdp_port:
+        log(f"Step 2: Trying CDP trigger on port {cdp_port}...")
+        triggered = trigger_extension_cdp(cdp_port)
+        if triggered:
+            log(f"CDP succeeded — job running in extension for {browser_name}")
+
+    # Fallback: keyboard Tab+Enter (no coordinates)
+    if not triggered:
+        log("Step 2: CDP unavailable — using keyboard trigger (Tab+Enter)...")
+        trigger_extension_keyboard()
+        triggered = True  # Keyboard trigger is fire-and-forget; assume it worked
+
+    log(f"Waiting 160s for job to complete in {browser_name}...")
     time.sleep(160)
 
     pyautogui.hotkey('alt', 'f4')
-    log(f"Script completed for: {browser_name}")
+    log(f"--- Script completed for: {browser_name} ---")
+
+    log(f"Waiting {int(SURFSHARK_AFTER_CLOSE_DELAY)}s after Alt+F4 before refreshing Surfshark...")
+    if not sleep_with_stop(SURFSHARK_AFTER_CLOSE_DELAY, "post-close Surfshark delay"):
+        return
+
+    log("Surfshark setup: restoring the VPN window after browser close...")
+    restore_surfshark_and_click(SURFSHARK_CLICK_X, SURFSHARK_CLICK_Y)
 
 
 # ============================================
@@ -328,9 +581,8 @@ def run_script_for_browser(browser_name, title_keyword, exe_path=None):
 
 def run_all_browsers_loop():
     """
-    Loops through all browsers forever:
-      Ulaa → 5 min → Chrome → 5 min → Edge → 5 min → Brave → 5 min → AVG Secure → 5 min → JioSphere → 5 min → repeat
-    Respects stop_requested flag — checks before each browser and every second during sleep.
+    Loops through all browsers:
+      Ulaa → 3 min → Chrome → 3 min → AVG Secure → 3 min → Edge → 3 min → Brave → 3 min → JioSphere → repeat
     """
     global is_running, stop_requested, last_error
 
@@ -344,30 +596,21 @@ def run_all_browsers_loop():
             cycle += 1
             log(f"=== Cycle {cycle} starting ===")
 
-            for browser_name, title_keyword, exe_path in BROWSERS:
+            for browser_name, title_keyword, exe_path, cdp_port in BROWSERS:
 
-                # Check stop before starting each browser
                 if stop_requested:
                     log("Stop requested — breaking browser loop")
                     break
 
-                # Run the script for this browser
                 try:
-                    run_script_for_browser(browser_name, title_keyword, exe_path)
+                    run_script_for_browser(browser_name, title_keyword, exe_path, cdp_port)
                 except Exception as e:
                     last_error = traceback.format_exc()
                     log(f"ERROR in {browser_name}: {e}")
                     log(last_error)
 
-                # Sleep between browsers
                 log(f"Sleeping {SLEEP_BETWEEN_BROWSERS // 60} min after {browser_name}...")
-                for _ in range(SLEEP_BETWEEN_BROWSERS):
-                    if stop_requested:
-                        log("Stop requested during sleep — exiting")
-                        break
-                    time.sleep(1)
-
-                if stop_requested:
+                if not sleep_with_stop(SLEEP_BETWEEN_BROWSERS, f"sleep after {browser_name}"):
                     break
 
             if stop_requested:
@@ -387,6 +630,75 @@ def run_all_browsers_loop():
 # ============================================
 # FLASK ROUTES
 # ============================================
+
+@app.route('/compress-pdf', methods=['POST', 'OPTIONS'])
+def compress_pdf():
+    if request.method == 'OPTIONS':
+        return '', 200
+
+    key = request.args.get("key")
+    if key != SECRET_KEY:
+        return "Unauthorized", 401
+
+    pdf_data = request.get_data()
+    if not pdf_data:
+        return jsonify({"error": "No PDF data received"}), 400
+
+    original_kb = len(pdf_data) // 1024
+
+    # Try Ghostscript — best compression (compresses embedded images too)
+    gs_candidates = [
+        r"C:\Program Files\gs\gs10.04.0\bin\gswin64c.exe",
+        r"C:\Program Files\gs\gs10.03.1\bin\gswin64c.exe",
+        r"C:\Program Files\gs\gs10.02.1\bin\gswin64c.exe",
+        "gswin64c", "gswin32c", "gs",
+    ]
+    import tempfile, os
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f_in:
+        f_in.write(pdf_data)
+        in_path = f_in.name
+    out_path = in_path + "_out.pdf"
+
+    try:
+        for gs_exe in gs_candidates:
+            try:
+                result = subprocess.run(
+                    [gs_exe, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
+                     "-dPDFSETTINGS=/ebook", "-dNOPAUSE", "-dQUIET", "-dBATCH",
+                     f"-sOutputFile={out_path}", in_path],
+                    timeout=120, capture_output=True
+                )
+                if result.returncode == 0 and os.path.exists(out_path):
+                    with open(out_path, "rb") as f:
+                        compressed = f.read()
+                    log(f"/compress-pdf: Ghostscript {original_kb}KB → {len(compressed)//1024}KB")
+                    return compressed, 200, {"Content-Type": "application/pdf"}
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+
+        # Fallback — pypdf (compresses content streams; less effective on image-heavy PDFs)
+        try:
+            import pypdf, io
+            reader = pypdf.PdfReader(io.BytesIO(pdf_data))
+            writer = pypdf.PdfWriter()
+            for page in reader.pages:
+                page.compress_content_streams()
+                writer.add_page(page)
+            buf = io.BytesIO()
+            writer.write(buf)
+            compressed = buf.getvalue()
+            log(f"/compress-pdf: pypdf {original_kb}KB → {len(compressed)//1024}KB")
+            return compressed, 200, {"Content-Type": "application/pdf"}
+        except Exception as e:
+            log(f"/compress-pdf: pypdf failed — {e}")
+            return jsonify({"error": f"No compression method available: {e}"}), 500
+    finally:
+        try: os.unlink(in_path)
+        except: pass
+        try: os.unlink(out_path)
+        except: pass
+
 
 @app.route('/run', methods=['GET', 'POST', 'HEAD', 'OPTIONS'])
 def run_api():
@@ -412,7 +724,7 @@ def run_api():
     return jsonify({
         "status": "triggered",
         "time": str(datetime.datetime.now()),
-        "message": "Browser loop started: Ulaa → Chrome → Edge → Brave → AVG Secure → JioSphere"
+        "message": "Browser loop started: Ulaa → Chrome → AVG Secure → Edge → Brave → JioSphere"
     })
 
 
@@ -440,7 +752,7 @@ def stop_api():
     return jsonify({
         "status": "stop_requested",
         "time": str(datetime.datetime.now()),
-        "message": "Stop signal sent. Loop will exit at the next checkpoint (within ~1 sec)."
+        "message": "Stop signal sent. Loop will exit at the next checkpoint."
     })
 
 
@@ -516,10 +828,11 @@ if __name__ == '__main__':
     print(f"  Status:  {public_url}/status")
     print(f"  Windows: {public_url}/windows?key={SECRET_KEY}  ← use to verify exe paths")
     print(f"")
-    print(f"  BROWSER ORDER:")
-    for name, _, exe in BROWSERS:
+    print(f"  BROWSER ORDER  (trigger method shown):")
+    for name, _, exe, cdp_port in BROWSERS:
         exists = "✅" if os.path.exists(exe) else "❌ NOT FOUND"
-        print(f"    → {name:<15}  {exists}")
+        trigger = f"CDP port {cdp_port}" if cdp_port else "Tab+Enter keyboard"
+        print(f"    → {name:<15}  {exists}  [{trigger}]")
         if not os.path.exists(exe):
             print(f"       Path: {exe}")
     print(f"  ({SLEEP_BETWEEN_BROWSERS // 60} min sleep between each)")

@@ -15,9 +15,10 @@
   "host_permissions": [
     "https://crm.creditfreedomrestoration.com/*",
     "https://www.experian.com/*",
-    "http://207.244.236.188/*",
+    "http://208.244.236.188/*",
     "http://localhost/*",
-    "http://127.0.0.1/*"
+    "http://127.0.0.1/*",
+    "http://127.0.0.1:5232/*"
   ],
   "background": {
     "service_worker": "background.js",

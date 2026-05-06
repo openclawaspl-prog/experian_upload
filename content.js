@@ -56,6 +56,44 @@
   }
 
 
+  // ── Character → correct KeyboardEvent code/keyCode ──────────────────────────
+  // React (and other frameworks) inspect the `code` field; wrong values like
+  // "Key-" or "Key." make them ignore the event even though the value was set.
+
+  function getKeyInfo(char) {
+    const map = {
+      " ": { code: "Space",     keyCode: 32  },
+      "-": { code: "Minus",     keyCode: 189 },
+      ".": { code: "Period",    keyCode: 190 },
+      ",": { code: "Comma",     keyCode: 188 },
+      "'": { code: "Quote",     keyCode: 222 },
+      "#": { code: "Digit3",    keyCode: 51  },
+      "/": { code: "Slash",     keyCode: 191 },
+      "\\":{ code: "Backslash", keyCode: 220 },
+      "@": { code: "Digit2",    keyCode: 50  },
+      ";": { code: "Semicolon", keyCode: 186 },
+      ":": { code: "Semicolon", keyCode: 186 },
+    };
+    if (map[char]) return map[char];
+    if (char >= "0" && char <= "9") return { code: `Digit${char}`, keyCode: char.charCodeAt(0) };
+    return { code: `Key${char.toUpperCase()}`, keyCode: char.toUpperCase().charCodeAt(0) };
+  }
+
+
+  // ── Sanitize address/city — strip chars Experian's form rejects ──────────────
+  // Normalizes accented Unicode letters (é→e, ñ→n, ü→u) then keeps only the
+  // characters a US address form accepts.
+
+  function sanitizeAddress(text) {
+    return String(text || "")
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")   // strip combining accent marks
+      .replace(/[^a-zA-Z0-9 \-.,#'\/]/g, "") // keep only safe address chars
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+
   // ── Human-like typing engine ─────────────────────────────────────────────────
 
   async function humanType(el, text, opts = {}) {
@@ -87,15 +125,15 @@
 
     for (let i = 0; i < text.length; i++) {
       const char = text[i];
-      const keyCode = char.toUpperCase().charCodeAt(0);
+      const { code, keyCode } = getKeyInfo(char);
       const keyInit = {
-        key: char, code: `Key${char.toUpperCase()}`,
-        keyCode, which: keyCode, charCode: keyCode,
+        key: char, code,
+        keyCode, which: keyCode, charCode: char.charCodeAt(0),
         bubbles: true, cancelable: true,
       };
 
       el.dispatchEvent(new KeyboardEvent("keydown", keyInit));
-      el.dispatchEvent(new KeyboardEvent("keypress", { ...keyInit, charCode: char.charCodeAt(0) }));
+      el.dispatchEvent(new KeyboardEvent("keypress", keyInit));
 
       let newVal = "";
       if (isCE) {
@@ -331,12 +369,12 @@
     clog("PAGE1_FIELD", `lastName → "${clientData.lastname}"`);
     await sleep(rand(300, 700));
 
-    await typeField(["#address", "[name='address']"], clientData.address);
-    clog("PAGE1_FIELD", `address → "${clientData.address}"`);
+    await typeField(["#address", "[name='address']"], sanitizeAddress(clientData.address));
+    clog("PAGE1_FIELD", `address → "${sanitizeAddress(clientData.address)}"`);
     await sleep(rand(400, 800));
 
-    await typeField(["#city", "[name='city']"], clientData.city);
-    clog("PAGE1_FIELD", `city → "${clientData.city}"`);
+    await typeField(["#city", "[name='city']"], sanitizeAddress(clientData.city));
+    clog("PAGE1_FIELD", `city → "${sanitizeAddress(clientData.city)}"`);
     await sleep(rand(300, 600));
 
     setSelect(["#state", "[name='state']"], clientData.state);
