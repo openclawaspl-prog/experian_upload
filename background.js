@@ -16,12 +16,12 @@
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG = {
-  CRM_FETCH_URL: "https://crm.creditfreedomrestoration.com/import_api.php?mode=get_experian_dispute_data",
-  CRM_SUCCESS_URL: "https://crm.creditfreedomrestoration.com/import_api.php?mode=experian_dispute_error_api_success",
-  CRM_ERROR_URL: "https://crm.creditfreedomrestoration.com/import_api.php?mode=experian_dispute_error_api_error",
+  CRM_FETCH_URL: "https://crm.creditfreedomrestoration.com/autodataimport.php?mode=get_experian_dispute_data",
+  CRM_SUCCESS_URL: "https://crm.creditfreedomrestoration.com/autodataimport.php?mode=experian_dispute_error_api_success",
+  CRM_ERROR_URL: "https://crm.creditfreedomrestoration.com/autodataimport.php?mode=experian_dispute_error_api_error",
   PDF_BASE_URL: "http://207.244.236.188/PdfFiles/",
   EXPERIAN_URL: "https://www.experian.com/consumer/upload/",
-  COMPRESS_THRESHOLD_MB: 5,
+  COMPRESS_THRESHOLD_MB: 14,
 };
 
 async function getConfig() {
@@ -68,6 +68,32 @@ async function fetchDisputeFromCRM(config) {
   const res = await fetch(config.CRM_FETCH_URL, { cache: "no-store" });
   if (!res.ok) throw new Error(`CRM fetch failed — HTTP ${res.status} | ${(await res.text()).substring(0, 200)}`);
   return res.json();
+}
+
+async function compressPDFBytes(rawBuffer, originalMB, jobId) {
+  try {
+    await writeLog(jobId, "PDF_COMPRESSING", `${originalMB.toFixed(2)} MB > 14 MB — sending to local compressor…`);
+    const res = await fetch("http://127.0.0.1:5232/compress-pdf?key=mysecret1256", {
+      method: "POST",
+      headers: { "Content-Type": "application/pdf" },
+      body: rawBuffer,
+    });
+    if (!res.ok) {
+      await writeLog(jobId, "COMPRESS_FAILED", `Compressor HTTP ${res.status} — uploading original`);
+      return null;
+    }
+    const compressedBuf = await res.arrayBuffer();
+    const compressedMB = compressedBuf.byteLength / (1024 * 1024);
+    if (compressedMB >= originalMB) {
+      await writeLog(jobId, "COMPRESS_NO_GAIN", `Compressed (${compressedMB.toFixed(2)} MB) >= original — using original`);
+      return null;
+    }
+    await writeLog(jobId, "COMPRESS_OK", `${originalMB.toFixed(2)} MB → ${compressedMB.toFixed(2)} MB`);
+    return new Uint8Array(compressedBuf);
+  } catch (err) {
+    await writeLog(jobId, "COMPRESS_ERROR", `${err.message} — uploading original`);
+    return null;
+  }
 }
 
 async function postResultToCRM(config, disputeErrorId, resultMessage, isSuccess) {
@@ -293,42 +319,38 @@ async function runDisputePipeline() {
       await writeLog(jobId, "PDF_DOWNLOADED", `Saved: Downloads/${pdfFilename} | Size: ${sizeMB.toFixed(2)} MB`);
     }
 
-    if (sizeMB > config.COMPRESS_THRESHOLD_MB) {
-      await writeLog(jobId, "PDF_SIZE_WARNING",
-        `File is ${sizeMB.toFixed(2)} MB — exceeds ${config.COMPRESS_THRESHOLD_MB} MB threshold. ` +
-        `Uploading original. To auto-compress, expose a /compress-pdf endpoint on your server.`
-      );
-    }
-
     await broadcastStatus(jobId, "pdf_ok", `PDF ready: ${pdfFilename} (${sizeMB.toFixed(2)} MB)`);
 
     // ── 4. Fetch PDF bytes in background (content scripts can't cross-origin fetch in MV3)
-    //
-    // In Manifest V3, content scripts are subject to the PAGE's CORS policy,
-    // NOT the extension's host_permissions. Since we're on experian.com and
-    // the PDF lives on http://207.244.236.188, the content script's fetch()
-    // would be blocked by CORS + mixed-content (HTTPS→HTTP).
-    // Solution: fetch here in the service worker (which HAS host_permissions)
-    // and pass the base64 data to the content script via storage.
-
     await writeLog(jobId, "PDF_FETCHING_BYTES", "Fetching PDF bytes for content script…");
     let pdfBase64 = "";
     try {
       const pdfRes = await fetch(pdfUrl, { cache: "no-store" });
       if (!pdfRes.ok) throw new Error(`HTTP ${pdfRes.status}`);
       const arrayBuf = await pdfRes.arrayBuffer();
+      let finalBytes = new Uint8Array(arrayBuf);
+      const actualMB = finalBytes.length / (1024 * 1024);
+      await writeLog(jobId, "PDF_BYTES_OK", `Got ${finalBytes.length} bytes (${actualMB.toFixed(2)} MB)`);
+
+      // Compress if over threshold — applies to both local and remote PDFs
+      if (actualMB > config.COMPRESS_THRESHOLD_MB) {
+        await broadcastStatus(jobId, "compressing_pdf", `Compressing PDF (${actualMB.toFixed(2)} MB)…`);
+        const compressed = await compressPDFBytes(arrayBuf, actualMB, jobId);
+        if (compressed) {
+          finalBytes = compressed;
+          sizeMB = finalBytes.length / (1024 * 1024);
+        }
+      }
+
       // Convert to base64 for safe transfer via chrome.storage
-      const bytes = new Uint8Array(arrayBuf);
       let binary = "";
       const chunkSize = 8192;
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+      for (let i = 0; i < finalBytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, finalBytes.subarray(i, i + chunkSize));
       }
       pdfBase64 = btoa(binary);
-      await writeLog(jobId, "PDF_BYTES_OK", `Got ${bytes.length} bytes (${(bytes.length / 1024 / 1024).toFixed(2)} MB)`);
     } catch (fetchErr) {
       await writeLog(jobId, "PDF_BYTES_ERROR", `Could not fetch PDF bytes: ${fetchErr.message}`);
-      // Will fall back to content script trying fetch (may fail due to CORS)
     }
 
     // ── 5. Prepare SSN parts ──────────────────────────────────────────────────
@@ -372,10 +394,14 @@ async function runDisputePipeline() {
     // ── 6. Open Experian tab ──────────────────────────────────────────────────
     await broadcastStatus(jobId, "opening_experian", "Opening Experian upload page…");
     const tab = await chrome.tabs.create({ url: config.EXPERIAN_URL, active: true });
-    await setJobState({ tabId: tab.id, jobId, status: "form_in_progress" });
+    await setJobState({ tabId: tab.id, jobId, disputeErrorId, status: "form_in_progress" });
     await writeLog(jobId, "TAB_OPENED",
       `Experian tab opened | tab_id=${tab.id} | url=${config.EXPERIAN_URL}`
     );
+    
+    // Set overarching timeout watchdog (110 seconds)
+    // If the content script hits a 404/network error, it might never reply.
+    chrome.alarms.create(`jobTimeout_${jobId}`, { delayInMinutes: 1.8 });
 
   } catch (err) {
     await writeLog(jobId, "JOB_FAILED", `FATAL: ${err.message}`, true);
@@ -389,6 +415,8 @@ async function runDisputePipeline() {
 
 async function handleFormResult({ jobId, isSuccess, resultMessage, disputeErrorId }) {
   const config = await getConfig();
+
+  chrome.alarms.clear(`jobTimeout_${jobId}`);
 
   await writeLog(jobId, isSuccess ? "FORM_SUCCESS" : "FORM_ERROR",
     `Result: ${resultMessage.substring(0, 500)}`
@@ -477,5 +505,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.storage.local.get(`log_${message.date}`)
         .then(r => sendResponse({ logs: r[`log_${message.date}`] || [] }));
       return true;
+  }
+});
+
+// ── Alarm Listener (Timeout Watchdog) ─────────────────────────────────────────
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name.startsWith("jobTimeout_")) {
+    const jobId = alarm.name.split("_")[1];
+    const state = await getJobState();
+    if (state.jobId === jobId && state.status === "form_in_progress") {
+      await writeLog(jobId, "JOB_TIMEOUT", "Automation timed out (possible blank page, 404, or network error)");
+      await handleFormResult({
+        jobId,
+        isSuccess: false,
+        resultMessage: "ERROR: Timeout — The job took too long (possible network error, 404, or browser hang).",
+        disputeErrorId: state.disputeErrorId || ""
+      });
+    }
   }
 });
