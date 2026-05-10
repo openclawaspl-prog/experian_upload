@@ -14,9 +14,114 @@ import psutil
 import json
 import websocket
 import requests as _http
+import winreg
 
 # Path to extension icon image for visual matching
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "ext_icon.png")
+
+
+def _find_exe_registry(exe_name):
+    """Check Windows App Paths registry (HKLM then HKCU) for an installed browser exe."""
+    reg_path = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe_name}"
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, reg_path) as key:
+                path, _ = winreg.QueryValueEx(key, "")
+                if path and os.path.exists(path):
+                    return path
+        except (FileNotFoundError, OSError):
+            pass
+    return None
+
+
+def _find_exe_startmenu(exe_name):
+    """
+    Search SOFTWARE\Clients\StartMenuInternet for a browser whose open command
+    contains exe_name. This is where all Chromium-based browsers register themselves.
+    """
+    base = r"SOFTWARE\Clients\StartMenuInternet"
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, base) as parent:
+                i = 0
+                while True:
+                    try:
+                        sub = winreg.EnumKey(parent, i)
+                        i += 1
+                        try:
+                            with winreg.OpenKey(parent, rf"{sub}\shell\open\command") as cmd_key:
+                                cmd, _ = winreg.QueryValueEx(cmd_key, "")
+                                # cmd is like: "C:\path\to\browser.exe" --args
+                                exe_path = cmd.strip().strip('"').split('"')[0].split("'")[0].strip()
+                                if os.path.basename(exe_path).lower() == exe_name.lower():
+                                    if os.path.exists(exe_path):
+                                        return exe_path
+                        except (FileNotFoundError, OSError):
+                            pass
+                    except OSError:
+                        break
+        except (FileNotFoundError, OSError):
+            pass
+    return None
+
+
+def _search_dir_for_exe(exe_name, *search_roots):
+    """Walk each search_root directory tree looking for exe_name (case-insensitive)."""
+    for root in search_roots:
+        root = os.path.expandvars(root)
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _, filenames in os.walk(root):
+            for fn in filenames:
+                if fn.lower() == exe_name.lower():
+                    return os.path.join(dirpath, fn)
+    return None
+
+
+def resolve_exe(exe_name, *candidates):
+    """
+    Locate a browser exe using four escalating strategies:
+      1. App Paths registry  (HKLM / HKCU)
+      2. StartMenuInternet registry  (where all Chromium browsers self-register)
+      3. Candidate path list  (env vars expanded)
+      4. Directory walk inside common install roots derived from candidates
+    Falls back to the first candidate path so the NOT FOUND display still works.
+    """
+    path = _find_exe_registry(exe_name)
+    if path:
+        return path
+
+    path = _find_exe_startmenu(exe_name)
+    if path:
+        return path
+
+    for p in candidates:
+        expanded = os.path.expandvars(p)
+        if os.path.exists(expanded):
+            return expanded
+
+    # Build search roots: take the top-level vendor directory from each candidate
+    # e.g. "C:\Program Files\AVG\Browser\Application\avg.exe" → "C:\Program Files\AVG"
+    search_roots = []
+    pf   = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+    pf86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+    lad  = os.environ.get("LOCALAPPDATA", "")
+    for p in candidates:
+        expanded = os.path.expandvars(p)
+        for base in (pf, pf86, lad):
+            if base and expanded.lower().startswith(base.lower()):
+                # vendor dir is the next component after the base
+                rel = expanded[len(base):].lstrip("\\/")
+                vendor = os.path.join(base, rel.split("\\")[0].split("/")[0])
+                if os.path.isdir(vendor) and vendor not in search_roots:
+                    search_roots.append(vendor)
+                break
+
+    path = _search_dir_for_exe(exe_name, *search_roots)
+    if path:
+        return path
+
+    return os.path.expandvars(candidates[0]) if candidates else ""
 
 app = Flask(__name__)
 
@@ -47,25 +152,49 @@ SLEEP_BETWEEN_BROWSERS = 3 * 60  # 3 minutes in seconds
 # added automatically. If it was already running WITHOUT the flag, CDP will
 # fail gracefully and fall through to Tab+Enter keyboard trigger.
 BROWSERS = [
-    # ("Ulaa",       "Ulaa",               r"C:\Program Files\Zoho\Ulaa\Application\ulaa.exe",                       9222),
-    ("Chrome",     "Google Chrome",      r"C:\Program Files\Google\Chrome\Application\chrome.exe",                  9223),
-    ("AVG Secure", "AVG Secure Browser", r"C:\Program Files\AVG\Browser\Application\avg_browser.exe",               9224),
-    ("Edge",       "Microsoft Edge",     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",           9225),
-    ("Brave",      "Brave",              r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",     9226),
-    ("JioSphere",  "JioSphere",          r"C:\Program Files\JioSphere\Application\jiosphere.exe",                   9227),
-    # Per-user JioSphere fallback:
-    # ("JioSphere", "JioSphere", r"C:\Users\<YourUser>\AppData\Local\JioSphere\Application\jiosphere.exe", 9227),
+    ("Ulaa", "Ulaa",
+     resolve_exe("ulaa.exe",
+         r"C:\Program Files\Zoho\Ulaa\Application\ulaa.exe",
+         r"%LOCALAPPDATA%\Zoho\Ulaa\Application\ulaa.exe"),
+     9222),
+    ("Chrome", "Google Chrome",
+     resolve_exe("chrome.exe",
+         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+         r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+     9223),
+    ("AVG Secure", "AVG Secure Browser",
+     resolve_exe("AVGBrowser.exe",
+         r"C:\Program Files\AVG\Browser\Application\AVGBrowser.exe",
+         r"%LOCALAPPDATA%\AVG\Browser\Application\AVGBrowser.exe",
+         r"C:\Program Files (x86)\AVG\Browser\Application\AVGBrowser.exe"),
+     9224),
+    ("Edge", "Microsoft Edge",
+     resolve_exe("msedge.exe",
+         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+     9225),
+    ("Brave", "Brave",
+     resolve_exe("brave.exe",
+         r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+         r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+     9226),
+    ("JioSphere", "JioSphere",
+     resolve_exe("jiosphere.exe",
+         r"C:\Program Files\JioSphere\Application\jiosphere.exe",
+         r"C:\Program Files (x86)\JioSphere\Application\jiosphere.exe",
+         r"%LOCALAPPDATA%\JioSphere\Application\jiosphere.exe"),
+     9227),
 ]
 
 # Surfshark VPN window handling.
 # Set the click coordinates to the button you want to press after Surfshark is restored.
 SURFSHARK_WINDOW_TITLE = "Surfshark"
 SURFSHARK_EXE_PATH = r"C:\Program Files\Surfshark\Surfshark.exe"
-SURFSHARK_CLICK_X = 1400
-SURFSHARK_CLICK_Y = 800
+SURFSHARK_CLICK_X = 1000
+SURFSHARK_CLICK_Y = 520
 SURFSHARK_RESTORE_DELAY = 1.0
-SURFSHARK_POST_CLICK_DELAY = 15.0
-SURFSHARK_AFTER_CLOSE_DELAY = 5.0
+SURFSHARK_POST_CLICK_DELAY = 20.0
+SURFSHARK_AFTER_CLOSE_DELAY = 10.0
 
 # Disable PyAutoGUI fail-safe (prevents crash if mouse is at corner on RDP/VMs)
 pyautogui.FAILSAFE = False
@@ -276,9 +405,17 @@ def restore_surfshark_and_click(click_x, click_y, title_keyword=SURFSHARK_WINDOW
     if click_x is None or click_y is None:
         log("Surfshark restored, but click coordinates are not configured and could not be derived.")
         return False
-    
+    pyautogui.moveTo(1000, 420, duration=0.25)
+    time.sleep(1.5)
+
+    pyautogui.leftClick()
+
+    time.sleep(1.5)
     pyautogui.moveTo(click_x, click_y, duration=0.25)
-    pyautogui.click()
+    time.sleep(0.5)
+    pyautogui.leftClick()
+
+    # pyautogui.click()
     log(f"Surfshark click sent at ({click_x}, {click_y})")
     time.sleep(SURFSHARK_POST_CLICK_DELAY)
     return True
@@ -425,7 +562,7 @@ def trigger_extension_keyboard():
     time.sleep(2.5)
 
     log("Keyboard trigger: opening popup (Ctrl+Shift+Q)...")
-    pyautogui.hotkey('ctrl', 'shift', 'e')
+    pyautogui.hotkey('ctrl', 'shift', 'Q')
     time.sleep(2.5)
 
     # Tab focuses runBtn (first focusable element in popup.html)
@@ -781,7 +918,7 @@ def list_windows():
 
     titles = get_all_window_titles()
 
-    browser_exes = ["chrome.exe", "msedge.exe", "brave.exe", "avg_browser.exe", "ulaa.exe", "jiosphere.exe"]
+    browser_exes = ["chrome.exe", "msedge.exe", "brave.exe", "avgbrowser.exe", "ulaa.exe", "jiosphere.exe"]
     running_browsers = []
     for proc in psutil.process_iter(['pid', 'name', 'exe']):
         try:
