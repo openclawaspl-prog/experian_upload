@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from pyngrok import ngrok
+import pypdf, io
 import pyautogui
 import time
 import threading
@@ -190,8 +191,8 @@ BROWSERS = [
 # Set the click coordinates to the button you want to press after Surfshark is restored.
 SURFSHARK_WINDOW_TITLE = "Surfshark"
 SURFSHARK_EXE_PATH = r"C:\Program Files\Surfshark\Surfshark.exe"
-SURFSHARK_CLICK_X = 1000
-SURFSHARK_CLICK_Y = 520
+SURFSHARK_CLICK_X = 1450
+SURFSHARK_CLICK_Y = 720
 SURFSHARK_RESTORE_DELAY = 1.0
 SURFSHARK_POST_CLICK_DELAY = 20.0
 SURFSHARK_AFTER_CLOSE_DELAY = 10.0
@@ -405,7 +406,7 @@ def restore_surfshark_and_click(click_x, click_y, title_keyword=SURFSHARK_WINDOW
     if click_x is None or click_y is None:
         log("Surfshark restored, but click coordinates are not configured and could not be derived.")
         return False
-    pyautogui.moveTo(1000, 420, duration=0.25)
+    pyautogui.moveTo(1450, 700, duration=0.25)
     time.sleep(1.5)
 
     pyautogui.leftClick()
@@ -816,7 +817,6 @@ def compress_pdf():
 
         # Fallback — pypdf (compresses content streams; less effective on image-heavy PDFs)
         try:
-            import pypdf, io
             reader = pypdf.PdfReader(io.BytesIO(pdf_data))
             writer = pypdf.PdfWriter()
             for page in reader.pages:

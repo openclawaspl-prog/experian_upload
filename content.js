@@ -80,6 +80,30 @@
   }
 
 
+  // ── QWERTY adjacency map for realistic typo simulation ───────────────────────
+
+  const NEARBY_KEYS = {
+    q:['w','a'],       w:['q','e','s'],      e:['w','r','d'],    r:['e','t','f'],
+    t:['r','y','g'],   y:['t','u','h'],      u:['y','i','j'],    i:['u','o','k'],
+    o:['i','p','l'],   p:['o','l'],
+    a:['q','w','s','z'],  s:['a','w','e','d','z'],  d:['s','e','r','f'],
+    f:['d','r','t','g'],  g:['f','t','y','h'],      h:['g','y','u','j'],
+    j:['h','u','i','k'],  k:['j','i','o','l'],      l:['k','o','p'],
+    z:['a','s','x'],   x:['z','s','d','c'],  c:['x','d','f'],    v:['c','f','g'],
+    b:['v','g','h'],   n:['b','h','j'],      m:['n','j','k'],
+    '1':['2'],'2':['1','3'],'3':['2','4'],'4':['3','5'],
+    '5':['4','6'],'6':['5','7'],'7':['6','8'],'8':['7','9'],'9':['8','0'],'0':['9'],
+  };
+
+  function nearbyKey(char) {
+    const lower = char.toLowerCase();
+    const neighbors = NEARBY_KEYS[lower];
+    if (!neighbors) return null;
+    const pick = neighbors[Math.floor(Math.random() * neighbors.length)];
+    return (char !== lower) ? pick.toUpperCase() : pick;
+  }
+
+
   // ── Sanitize address/city — strip chars Experian's form rejects ──────────────
   // Normalizes accented Unicode letters (é→e, ñ→n, ü→u) then keeps only the
   // characters a US address form accepts.
@@ -99,11 +123,12 @@
   async function humanType(el, text, opts = {}) {
     if (!el || !text) return;
 
-    const minDelay = opts.minDelay ?? 65;
-    const maxDelay = opts.maxDelay ?? 155;
-    const pauseMin = opts.pauseMin ?? 200;
-    const pauseMax = opts.pauseMax ?? 420;
+    const minDelay  = opts.minDelay  ?? 65;
+    const maxDelay  = opts.maxDelay  ?? 155;
+    const pauseMin  = opts.pauseMin  ?? 200;
+    const pauseMax  = opts.pauseMax  ?? 420;
     const pauseEvery = opts.pauseEvery ?? rand(4, 8);
+    const typoRate  = opts.typoRate  ?? 0.05;   // ~5% chance of wrong key per char
 
     el.focus();
     el.click();
@@ -121,32 +146,52 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
     await sleep(rand(30, 90));
 
+    // ── per-character helpers (closures over el / nativeSetter / isCE) ─────────
+
+    function typeChar(c) {
+      const { code, keyCode } = getKeyInfo(c);
+      const ki = { key: c, code, keyCode, which: keyCode, charCode: c.charCodeAt(0), bubbles: true, cancelable: true };
+      el.dispatchEvent(new KeyboardEvent("keydown", ki));
+      el.dispatchEvent(new KeyboardEvent("keypress", ki));
+      const newVal = (isCE ? (el.textContent || "") : (el.value || "")) + c;
+      if (isCE) el.textContent = newVal;
+      else if (nativeSetter) nativeSetter.call(el, newVal);
+      else el.value = newVal;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent("keyup", ki));
+    }
+
+    function backspaceOne() {
+      const bk = { key: "Backspace", code: "Backspace", keyCode: 8, which: 8, bubbles: true, cancelable: true };
+      el.dispatchEvent(new KeyboardEvent("keydown", bk));
+      const cur = isCE ? (el.textContent || "") : (el.value || "");
+      const trimmed = cur.slice(0, -1);
+      if (isCE) el.textContent = trimmed;
+      else if (nativeSetter) nativeSetter.call(el, trimmed);
+      else el.value = trimmed;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent("keyup", bk));
+    }
+
+    // ── main typing loop ────────────────────────────────────────────────────────
+
     let charsSincePause = 0;
 
     for (let i = 0; i < text.length; i++) {
       const char = text[i];
-      const { code, keyCode } = getKeyInfo(char);
-      const keyInit = {
-        key: char, code,
-        keyCode, which: keyCode, charCode: char.charCodeAt(0),
-        bubbles: true, cancelable: true,
-      };
 
-      el.dispatchEvent(new KeyboardEvent("keydown", keyInit));
-      el.dispatchEvent(new KeyboardEvent("keypress", keyInit));
-
-      let newVal = "";
-      if (isCE) {
-        newVal = (el.textContent || "") + char;
-        el.textContent = newVal;
-      } else {
-        newVal = (el.value || "") + char;
-        if (nativeSetter) nativeSetter.call(el, newVal);
-        else el.value = newVal;
+      // Typo: hit a nearby wrong key, notice it, backspace, retype correctly
+      if (typoRate > 0 && char !== " " && Math.random() < typoRate) {
+        const wrong = nearbyKey(char);
+        if (wrong) {
+          typeChar(wrong);
+          await sleep(rand(140, 400));   // time to notice the mistake
+          backspaceOne();
+          await sleep(rand(70, 190));    // brief pause before retyping
+        }
       }
 
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new KeyboardEvent("keyup", keyInit));
+      typeChar(char);
 
       charsSincePause++;
       if (charsSincePause >= pauseEvery) {
@@ -209,6 +254,11 @@
       return true;
     }
     return false;
+  }
+
+  async function humanScroll(pixels) {
+    window.scrollBy({ top: pixels ?? rand(120, 280), behavior: "smooth" });
+    await sleep(rand(250, 600));
   }
 
 
@@ -322,6 +372,27 @@
 
   async function detectAndHandlePage() {
     await sleep(2000);
+
+    // Blank-page guard: Experian bot-detection sometimes returns an empty document.
+    // Wait up to 12 s for body content before deciding it's a hard block.
+    let bodyText = (document.body?.innerText || document.body?.textContent || "").trim();
+    if (bodyText.length < 15) {
+      clog("PAGE_BLANK_WAIT", "Page appears empty — waiting up to 12 s for content…");
+      for (let t = 0; t < 12; t++) {
+        await sleep(1000);
+        bodyText = (document.body?.innerText || document.body?.textContent || "").trim();
+        if (bodyText.length >= 15) {
+          clog("PAGE_BLANK_OK", `Content appeared after ${t + 1} s — continuing`);
+          break;
+        }
+      }
+      if (bodyText.length < 15) {
+        clog("PAGE_BLANK_BLOCKED", "Page still blank after 12 s — bot detection triggered");
+        sendResult(false, "ERROR: Bot detection — blank white page after Page 1 submit. No form content loaded.");
+        return;
+      }
+    }
+
     const hasP1 = document.querySelector("#firstName, [name='firstName']");
     const hasP2 = document.querySelector("#reason, #file0, #tellusmore, [name='tellusmore']");
     const storedPage = jobData.page || 1;
@@ -432,7 +503,12 @@
     }
 
     await setPage(2);
-    await sleep(rand(700, 1400));
+
+    // Scroll down gradually — like a human reviewing what they typed
+    await humanScroll(rand(180, 320));
+    await sleep(rand(500, 900));
+    await humanScroll(rand(150, 280));
+    await sleep(rand(1200, 2600));   // "reading" the form before submitting
 
     const continueBtn = document.querySelector(
       "#continueButton, [name='continueButton'], button[type='submit']"
@@ -442,6 +518,10 @@
       sendResult(false, "ERROR: Page 1 Continue button not found");
       return;
     }
+
+    // Scroll the button into view before clicking
+    continueBtn.scrollIntoView({ behavior: "smooth", block: "center" });
+    await sleep(rand(400, 800));
 
     clog("PAGE1_SUBMIT", "Clicking Continue on Page 1…");
     continueBtn.click();

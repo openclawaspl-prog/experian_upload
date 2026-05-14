@@ -1,5 +1,5 @@
 Public URL: https://sherell-ferny-unethereally.ngrok-free.dev
-Start:   https://sherell-ferny-unethereally.ngrok-free.dev/run?key=mysecret1256
-Stop:    https://sherell-ferny-unethereally.ngrok-free.dev/stop?key=mysecret1256
+Start:   https://sherell-ferny-unethereally.ngrok-free.dev/run?key=mysecret123
+Stop:    https://sherell-ferny-unethereally.ngrok-free.dev/stop?key=mysecret123
 Status:  https://sherell-ferny-unethereally.ngrok-free.dev/status
-Windows: https://sherell-ferny-unethereally.ngrok-free.dev/windows?key=mysecret1256
+Windows: https://sherell-ferny-unethereally.ngrok-free.dev/windows?key=mysecret123
